@@ -172,18 +172,31 @@ function update_key(graph,id) {
   }
 }
 
+function link_color (graph,link) {
+  var a = link.source.id
+  var b = link.target.id
+  var ab = b in graph.sigs[a] ? graph.sigs[a][b].code : -1
+  var ba = a in graph.sigs[b] ? graph.sigs[b][a].code : -1
+  if (ab==4 && ba==4)
+    return 'green'
+  if (   (ab==2 || ab==4 || ab==-1)
+      && (ba==2 || ba==4 || ba==-1))
+    return 'orange'
+  return 'red'
+}
+
 // Toplevel
 window.onload = function () {
   openpgp.init()
   var graph = new Graph()
-  var width = 960
-  var height = 200
+  var width = 640
+  var height = 480
   var radius = 10
   var svg = d3.select('body').append('svg')
     .attr('width',width)
     .attr('height',height)
   var force = d3.layout.force()
-    .linkDistance(50)
+    .linkDistance(100)
     .size([width,height])
 
   graph.onchange = function () {
@@ -195,6 +208,8 @@ window.onload = function () {
       .data(graph.links)
     link.enter().insert('line','circle')
       .attr('class','link')
+
+    link.style('stroke', function (d) { return link_color(graph,d) })
 
     var node = svg.selectAll('.node')
       .data(graph.nodes)
