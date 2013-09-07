@@ -13,60 +13,114 @@ function show_id(id) {
   return util.hexstrdump(id)
 }
 
+// A web of trust graph
 function Graph() {
-  // key fingerprint -> key
-  this.keys = {}
+  // Nodes in order of discovery.  Fields:
+  //   index - index into nodes array
+  //   id - 8 byte key id
+  //   key - public key if we have it
+  function Node (index,id) {
+    this.index = index
+    this.id = id
+    this.toString = function () { return show_id(this.id) }
+    // Key undefined at first
+  }
+  this.nodes = []
 
-  // a -> b -> code if b's signature of a is
-  //   0 - bad
-  //   1 - expired
-  //   2 - issuer not available 
-  //   3 - revoked
-  //   4 - valid
-  //   5 - signature by key owner expired
-  //   6 - signature by key owner revoked
-  // This list from http://openpgpjs.org/openpgpjs/doc/openpgp_packet_userid.html
-  this.sigs = {}
+  // key id -> node
+  this.id_to_node = {}
+
+  // a -> b -> link if b signs a.  The link has fields
+  //   id - id of the key signed (a)
+  //   issuer - id of the signer (b) 
+  //   code - one of the following, taken from http://openpgpjs.org/openpgpjs/doc/openpgp_packet_userid.html
+  //     0 - bad
+  //     1 - expired
+  //     2 - issuer not available 
+  //     3 - revoked
+  //     4 - valid
+  //     5 - signature by key owner expired
+  //     6 - signature by key owner revoked
+  function Sig (id,issuer,code,link) {
+    this.id = id
+    this.issuer = issuer
+    this.code = code
+    this.link = link
+    this.toString = function () { return show_id(this.id)+'-'+show_id(this.issuer)+'-'+this.code }
+  }
+  function Link (source,target) {
+    this.source = source
+    this.target = target
+  }
+  this.links = [] // Ordered list of link objects
+  this.sigs = {} // a -> b -> link if b signs a
   this.inv_sigs = {} // a -> b -> true if a in sigs[b]
 
-  this.add_key = function (key) {
-    var id = key.getKeyId()
+  // Should be called after any changes
+  this.onchange = function () {}
+
+  // Add a new node, or return the existing node if it doesn't exist
+  this.add_node = function (id) {
+    if (id in this.id_to_node)
+      return this.id_to_node[id]
     if (id.length != 8)
       throw 'bad length '+id.length
-    this.keys[id] = key
-    if (!(id in this.sigs))
-      this.sigs[id] = {}
-    return id
+    var i = this.nodes.length
+    var node = new Node(i,id)
+    this.nodes[i] = this.id_to_node[id] = node
+    this.sigs[id] = {}
+    this.inv_sigs[id] = {}
+    return node
   }
 
   // b signs a with given code
   this.add_edge = function (a,b,code) {
-    if (a.length != 8 || b.length != 8)
-      throw 'bad lengths '+a.length+' '+b.length
-    if (!(a in this.keys))
-      throw 'unknown key '+a 
-    this.sigs[a][b] = code
-    if (!(b in this.inv_sigs))
-      this.inv_sigs[b] = {}
-    this.inv_sigs[b][a] = true
+    this.add_node(a)
+    this.add_node(b)
+    if (!(b in this.sigs[a])) {
+      var ai = this.id_to_node[a].index
+      var bi = this.id_to_node[b].index
+      var link = a in this.sigs[b] ? this.sigs[b][a].link
+                                   : new Link(ai,bi)
+      var sig = new Sig(a,b,code,link)
+      if (link.source == ai)
+        this.links.push(link)
+      this.sigs[a][b] = sig
+      this.inv_sigs[b][a] = true
+    } else
+      this.sigs[a][b].code = code
   }
 
   this.short_name = function (id) {
-    if (id in this.keys)
-      return this.keys[id].userIds[0].text.split(' ')[0]
-    return show_id(id)
+    var node = this.id_to_node[id]
+    return 'key' in node ? node.key.userIds[0].text.split(' ')[0]
+                         : show_id(id)
   }
 
-  this.log = function () {
-    for (var a in this.keys) {
-      console.log(this.short_name(a))
-      for (var b in this.sigs[a])
-        console.log('  '+this.short_name(b)+' : '+this.sigs[a][b])
+  this.long_name = function (id) {
+    var node = this.id_to_node[id]
+    return 'key' in node ? node.key.userIds[0].text
+                         : show_id(id)
+  }
+
+  this.dump = function () {
+    for (var i=0;i<this.nodes.length;i++) {
+      var a = this.nodes[i]
+      if ('key' in a) {
+        console.log(this.short_name(a.id))
+        for (var b in this.sigs[a.id])
+          console.log('  '+this.short_name(b)+' : '+this.sigs[a.id][b].code)
+      }
     }
   }
 }
 
+// Asynchronous request the given key id, and call receive_key one we have it
+var requested = {}
 function request_key(graph,id) {
+  if (id in requested)
+    return
+  requested[id] = true
   var sid = show_id(id)
   var xh = new XMLHttpRequest()
   xh.onreadystatechange = function () {
@@ -90,38 +144,85 @@ function request_key(graph,id) {
   xh.send() 
 }
 
+// Process a newly arrived key
 function receive_key(graph,key) {
-  var id = graph.add_key(key)
-  console.log('received key',show_id(id),key.userIds[0].text,key)
+  var id = key.getKeyId()
+  graph.add_node(id,key).key = key
+  console.log('received key',show_id(id),key.userIds[0].text)
   for (var a in graph.inv_sigs[id])
     update_key(graph,a)
   update_key(graph,id)
+  graph.onchange()
 }
 
+// Check all signatures for the given key id.  This is called once
+// when the key first arrives, and again whenever a signatory's key arrives.
 function update_key(graph,id) {
-  var key = graph.keys[id]
+  var key = graph.id_to_node[id].key
   var user = key.userIds[0]
-  console.log('updating key',show_id(id),user.text,key)
   var codes = user.verifyCertificationSignatures(key)
   for (var i=0;i<codes.length;i++) {
     var sig = user.certificationSignatures[i];
     var issuer = sig.getIssuer()
     if (id != issuer) {
-      console.log('signature',show_id(id),show_id(issuer),codes[i])
       graph.add_edge(id,issuer,codes[i])
       if (codes[i]==2)
         request_key(graph,issuer)
     }
   }
-  graph.log()
 }
 
-function main() {
+// Toplevel
+window.onload = function () {
   openpgp.init()
   var graph = new Graph()
-  request_key(graph,util.hex2bin(root))
-}
+  var width = 960
+  var height = 200
+  var radius = 10
+  var svg = d3.select('body').append('svg')
+    .attr('width',width)
+    .attr('height',height)
+  var force = d3.layout.force()
+    .linkDistance(50)
+    .size([width,height])
 
-window.onload = function () {
-  main()
+  graph.onchange = function () {
+    force.nodes(graph.nodes)
+    force.links(graph.links)
+    force.start()
+
+    var link = svg.selectAll('.link')
+      .data(graph.links)
+    link.enter().insert('line','circle')
+      .attr('class','link')
+
+    var node = svg.selectAll('.node')
+      .data(graph.nodes)
+
+    node.enter().append('circle')
+      .attr('class','node')
+      .attr('r',radius)
+      .call(force.drag)
+      .append('title')
+    
+    node.selectAll('title')
+      .text(function (d) { return graph.long_name(d.id) })
+
+    force.on('tick', function () {
+      link.attr('x1', function (d) { return d.source.x })
+          .attr('y1', function (d) { return d.source.y })
+          .attr('x2', function (d) { return d.target.x })
+          .attr('y2', function (d) { return d.target.y })
+      node.attr('cx', function (d) { return d.x })
+          .attr('cy', function (d) { return d.y })
+    })
+  }
+
+  // Request the first key!
+  var rid = util.hex2bin(root)
+  if (rid.length >= 8) {
+    graph.add_node(rid.substr(rid.length-8))
+    graph.onchange()
+  }
+  request_key(graph,rid)
 }
