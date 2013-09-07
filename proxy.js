@@ -7,7 +7,6 @@
 'use strict'
 var http = require('http')
 var url = require('url')
-var dns = require('dns')
 
 // For now, the key server is hard coded
 var keyserver = 'subkeys.pgp.net'
@@ -19,8 +18,8 @@ var keyserver = 'subkeys.pgp.net'
 // TODO: The correct behavior is to try the multiple address one at a time to see which one actually works.
 keyserver = '195.113.19.83'
 
-// Use standard keyserver ports
-var proxy_port = 11371
+// Use standard keyserver ports by default
+var proxy_port = process.env.PORT || 11371
 var server_port = 11371
 
 // Whether or not to spew debug information
