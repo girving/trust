@@ -1,7 +1,7 @@
 // Web of trust visualization
 
 'use strict'
-var keyserver = 'http://hkp-cors-proxy.herokuapp.com'
+var keyserver = 'http://sks.keyservers.net:11371'
 var root = strip('2B90 56C0 1793 3F4B 12CA  2E3D F87A 09CB 27AB 7E55')
 console.log('root',root)
 
